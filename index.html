@@ -1,0 +1,385 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>手到灵巧手</title>
+<style>
+/* Layout: phone-first single column. Camera on top, robot hand under it, quality strip, then the data card after a recording. Dark: used at a dinner table. */
+:root{
+  --bg:#0e1113; --panel:#171c1f; --line:#2a3338; --fg:#eef2f3; --dim:#8b989e;
+  --steel:#b9c4ca; --accent:#ffb347; --ok:#5fd18b; --warn:#f2c14e; --bad:#ef6f5e;
+  --f-display:"Noto Serif SC","Songti SC",serif;
+  --f-body:"Noto Sans SC","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+  --f-mono:ui-monospace,"JetBrains Mono",monospace;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+.robot>*,.checks>*{min-width:0}
+html,body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--f-body)}
+body{padding:max(10px,env(safe-area-inset-top)) max(14px,env(safe-area-inset-right)) 24px max(14px,env(safe-area-inset-left))}
+.wrap{max-width:560px;margin:0 auto;display:flex;flex-direction:column;gap:12px}
+header h1{font-family:var(--f-display);font-size:21px;margin:0}
+header p{margin:2px 0 0;color:var(--dim);font-size:13px}
+.stage{position:relative;border-radius:14px;overflow:hidden;background:#000;aspect-ratio:4/3;border:1px solid var(--line)}
+video,#overlay{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.mirror{transform:scaleX(-1)}
+.badge{position:absolute;left:10px;top:10px;font-size:13px;padding:3px 10px;border-radius:999px;background:rgba(0,0,0,.6);border:1px solid var(--line)}
+.rec{position:absolute;right:10px;top:10px;font:600 13px var(--f-mono);color:var(--bad);display:none}
+.rec.on{display:block}
+.start{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:10px;background:rgba(0,0,0,.55);text-align:center;padding:20px}
+.robot{display:grid;grid-template-columns:1fr 1fr;gap:10px;align-items:stretch}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:10px}
+.label{font-size:11px;letter-spacing:.12em;color:var(--dim)}
+#robotCanvas{width:100%;aspect-ratio:1/1;display:block}
+.motors{display:flex;flex-direction:column;gap:5px;margin-top:6px}
+.motor{display:grid;grid-template-columns:4.2em 1fr 2.6em;gap:6px;align-items:center;font-size:12px}
+.bar{height:8px;background:#0b0e10;border-radius:4px;overflow:hidden}
+.bar i{display:block;height:100%;background:var(--steel)}
+.num{font:12px var(--f-mono);text-align:right;color:var(--steel);font-variant-numeric:tabular-nums}
+.checks{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
+.chk{font-size:12px;border-radius:10px;padding:6px 8px;border:1px solid var(--line);background:var(--panel)}
+.chk b{display:block;font-size:13px}
+.chk.ok b{color:var(--ok)} .chk.warn b{color:var(--warn)} .chk.bad b{color:var(--bad)}
+.row{display:flex;gap:10px}
+button{font:inherit;color:var(--fg);background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 14px;cursor:pointer}
+button.primary{background:var(--accent);border-color:var(--accent);color:#2b1700;font-weight:700;flex:1}
+button:disabled{opacity:.5}
+.card{background:var(--panel);border:1px solid var(--accent);border-radius:14px;padding:14px;display:flex;flex-direction:column;gap:10px}
+.verdict{font-family:var(--f-display);font-size:24px;font-weight:700}
+.verdict.ok{color:var(--ok)} .verdict.warn{color:var(--warn)} .verdict.bad{color:var(--bad)}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:14px}
+.kv span:nth-child(odd){color:var(--dim)}
+.kv span:nth-child(even){font-variant-numeric:tabular-nums}
+#traj{width:100%;height:110px;display:block}
+.legend{display:flex;flex-wrap:wrap;gap:10px;font-size:12px;color:var(--dim)}
+.legend i{display:inline-block;width:10px;height:3px;margin-right:4px;vertical-align:middle}
+.foot{font-size:12px;color:var(--dim);line-height:1.6}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>手到灵巧手</h1>
+    <p>手机拍一段手 → 实时变成灵巧手的电机指令 → 当场验收这段数据能不能用</p>
+  </header>
+
+  <div class="stage" id="stage">
+    <video id="video" playsinline muted></video>
+    <canvas id="overlay"></canvas>
+    <div class="badge" id="badge">加载模型…</div>
+    <div class="rec" id="recBadge">● REC 0.0s</div>
+    <div class="start" id="startBox">
+      <div>把手伸到镜头前，五指张开再握拳</div>
+      <button class="primary" id="startBtn" type="button" style="flex:none">打开摄像头</button>
+    </div>
+  </div>
+
+  <div class="robot">
+    <div class="panel">
+      <div class="label">灵巧手（6 自由度，实时重定向）</div>
+      <canvas id="robotCanvas" width="400" height="400"></canvas>
+    </div>
+    <div class="panel">
+      <div class="label">电机指令 0–1000</div>
+      <div class="motors" id="motors"></div>
+      <div class="label" style="margin-top:10px">手指弯曲角（°）</div>
+      <div class="num" id="angles" style="text-align:left;line-height:1.5;margin-top:4px;white-space:pre-wrap;word-break:break-all">—</div>
+    </div>
+  </div>
+
+  <div class="checks" id="checks"></div>
+
+  <div class="row">
+    <button class="primary" id="recBtn" type="button" disabled>录 5 秒并验收</button>
+    <button id="flipBtn" type="button">换镜头</button>
+  </div>
+
+  <div class="card" id="card" hidden>
+    <div class="label">这段采集的验收卡</div>
+    <div class="verdict" id="verdict"></div>
+    <div class="kv" id="kv"></div>
+    <canvas id="traj" width="600" height="220"></canvas>
+    <div class="legend" id="legend"></div>
+    <button id="saveBtn" type="button">导出这段数据（JSON）</button>
+  </div>
+
+  <div class="foot">
+    全部在手机本地运行，不上传画面。手部 21 个关键点来自 Google MediaPipe Hand Landmarker；重定向和验收规则是自己写的，阈值是初版，会随真实采集再校准。
+  </div>
+</div>
+
+<script type="module">
+import { FilesetResolver, HandLandmarker } from "./vendor/vision_bundle.mjs";
+
+const FINGERS = { 拇指:[1,2,3,4], 食指:[5,6,7,8], 中指:[9,10,11,12], 无名指:[13,14,15,16], 小指:[17,18,19,20] };
+const NAMES = Object.keys(FINGERS);
+const COLORS = ["#ffb347","#5fd1b8","#8fb8ff","#e48bd8","#c9d36b"];
+// 6-DoF underactuated hand: one flex motor per finger + thumb rotation. Joint sum ranges set from typical human ROM.
+const MAXFLEX = { 拇指:150, 食指:250, 中指:250, 无名指:250, 小指:250 };
+
+const $ = id => document.getElementById(id);
+const video = $("video"), overlay = $("overlay"), octx = overlay.getContext("2d");
+const rc = $("robotCanvas"), rctx = rc.getContext("2d");
+let landmarker = null, facing = "user", stream = null, running = false;
+let last = null, lastT = 0, ema = null;
+let rec = null;
+
+// motors UI
+const motorRows = {};
+[["拇指旋转","拇指转"], ...NAMES.map(n=>[n,n])].forEach(([n,lab]) => {
+  const d = document.createElement("div"); d.className = "motor";
+  d.innerHTML = `<span>${lab}</span><div class="bar"><i style="width:0%"></i></div><span class="num">0</span>`;
+  $("motors").appendChild(d); motorRows[n] = d;
+});
+const CHECKS = [["hand","手在画面"],["size","距离"],["frame","不出框"],["speed","速度"],["jitter","抖动"],["conf","置信度"]];
+CHECKS.forEach(([k, t]) => { const d = document.createElement("div"); d.className = "chk"; d.id = "c_" + k; d.innerHTML = `${t}<b>—</b>`; $("checks").appendChild(d); });
+function setChk(k, state, text){ const d = $("c_" + k); d.className = "chk " + state; d.querySelector("b").textContent = text; }
+
+async function init(){
+  const files = await FilesetResolver.forVisionTasks("./vendor/wasm");
+  for (const delegate of ["GPU", "CPU"]) {
+    try {
+      landmarker = await HandLandmarker.createFromOptions(files, {
+        baseOptions: { modelAssetPath: "./vendor/hand_landmarker.task", delegate },
+        runningMode: "VIDEO", numHands: 1,
+        minHandDetectionConfidence: 0.5, minHandPresenceConfidence: 0.5, minTrackingConfidence: 0.5,
+      });
+      $("badge").textContent = "模型就绪（" + delegate + "）";
+      return;
+    } catch (e) { console.warn(delegate, e); }
+  }
+  $("badge").textContent = "模型加载失败";
+}
+const ready = init();
+
+async function startCam(){
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: facing, width: { ideal: 640 }, height: { ideal: 480 } }, audio: false });
+  video.srcObject = stream; await video.play();
+  video.classList.toggle("mirror", facing === "user"); overlay.classList.toggle("mirror", facing === "user");
+  $("startBox").hidden = true; $("recBtn").disabled = false;
+  await ready;
+  if (!running) { running = true; requestAnimationFrame(loop); }
+}
+$("startBtn").onclick = () => startCam().catch(e => { $("badge").textContent = "摄像头打不开：" + e.name; });
+$("flipBtn").onclick = () => { facing = facing === "user" ? "environment" : "user"; if (stream) startCam(); };
+
+const sub = (a, b) => [a.x - b.x, a.y - b.y, a.z - b.z];
+const dot = (u, v) => u[0]*v[0] + u[1]*v[1] + u[2]*v[2];
+const norm = u => Math.hypot(u[0], u[1], u[2]) || 1e-9;
+const ang = (u, v) => Math.acos(Math.max(-1, Math.min(1, dot(u, v) / (norm(u) * norm(v))))) * 180 / Math.PI;
+
+function retarget(w){
+  // w: world landmarks (metres, hand-centred). Flex at each joint = angle between consecutive bones.
+  const out = {};
+  for (const n of NAMES) {
+    const [a, b, c, d] = FINGERS[n];
+    const base = n === "拇指" ? w[1] : w[0];
+    const p0 = n === "拇指" ? w[0] : w[0];
+    const j1 = ang(sub(w[a], p0), sub(w[b], w[a]));
+    const j2 = ang(sub(w[b], w[a]), sub(w[c], w[b]));
+    const j3 = ang(sub(w[c], w[b]), sub(w[d], w[c]));
+    out[n] = [j1, j2, j3];
+  }
+  // thumb rotation: angle between thumb metacarpal and index metacarpal, mapped 20°..70°
+  const rot = ang(sub(w[2], w[1]), sub(w[5], w[0]));
+  const motors = { 拇指旋转: clamp01((rot - 20) / 50) * 1000 };
+  for (const n of NAMES) motors[n] = clamp01((out[n][0] + out[n][1] + out[n][2]) / MAXFLEX[n]) * 1000;
+  return { angles: out, motors };
+}
+const clamp01 = x => Math.max(0, Math.min(1, x));
+
+function quality(lm, w, score, t){
+  const xs = lm.map(p => p.x), ys = lm.map(p => p.y);
+  const minx = Math.min(...xs), maxx = Math.max(...xs), miny = Math.min(...ys), maxy = Math.max(...ys);
+  const diag = Math.hypot(maxx - minx, maxy - miny);
+  const inFrame = minx > 0.02 && maxx < 0.98 && miny > 0.02 && maxy < 0.98;
+  let speed = 0, jitter = 0;
+  if (last && t > lastT) {
+    const dt = (t - lastT) / 1000;
+    speed = Math.hypot(lm[0].x - last.lm[0].x, lm[0].y - last.lm[0].y) / dt; // frame-widths per second
+  }
+  // jitter: residual of world landmarks against an exponential moving average, in mm
+  if (!ema) ema = w.map(p => ({ ...p }));
+  let acc = 0;
+  for (let i = 0; i < 21; i++) {
+    const r = [w[i].x - ema[i].x, w[i].y - ema[i].y, w[i].z - ema[i].z];
+    acc += dot(r, r);
+    ema[i].x += 0.35 * (w[i].x - ema[i].x); ema[i].y += 0.35 * (w[i].y - ema[i].y); ema[i].z += 0.35 * (w[i].z - ema[i].z);
+  }
+  jitter = Math.sqrt(acc / 21) * 1000;
+  const q = {
+    size: diag >= 0.18 ? "ok" : diag >= 0.12 ? "warn" : "bad",
+    frame: inFrame ? "ok" : "bad",
+    speed: speed < 1.2 ? "ok" : speed < 2.0 ? "warn" : "bad",
+    jitter: jitter < 6 ? "ok" : jitter < 10 ? "warn" : "bad",
+    conf: score >= 0.9 ? "ok" : score >= 0.75 ? "warn" : "bad",
+  };
+  const usable = Object.values(q).every(s => s !== "bad");
+  return { q, usable, diag, speed, jitter, score };
+}
+
+function drawOverlay(lm){
+  overlay.width = overlay.clientWidth * devicePixelRatio; overlay.height = overlay.clientHeight * devicePixelRatio;
+  octx.clearRect(0, 0, overlay.width, overlay.height);
+  if (!lm) return;
+  // video is object-fit:cover; compute mapping
+  const vw = video.videoWidth, vh = video.videoHeight, cw = overlay.width, ch = overlay.height;
+  const s = Math.max(cw / vw, ch / vh), ox = (cw - vw * s) / 2, oy = (ch - vh * s) / 2;
+  const P = p => [p.x * vw * s + ox, p.y * vh * s + oy];
+  octx.lineWidth = 3 * devicePixelRatio; octx.lineCap = "round";
+  NAMES.forEach((n, i) => {
+    octx.strokeStyle = COLORS[i]; octx.beginPath();
+    const ch = [0, ...FINGERS[n]];
+    ch.forEach((k, j) => { const [x, y] = P(lm[k]); j ? octx.lineTo(x, y) : octx.moveTo(x, y); });
+    octx.stroke();
+  });
+  octx.fillStyle = "#fff";
+  lm.forEach(p => { const [x, y] = P(p); octx.beginPath(); octx.arc(x, y, 3 * devicePixelRatio, 0, 7); octx.fill(); });
+}
+
+function drawRobot(r){
+  const W = rc.width, H = rc.height; rctx.clearRect(0, 0, W, H);
+  const steel = getComputedStyle(document.documentElement).getPropertyValue("--steel").trim();
+  // palm
+  const px = W * 0.22, py = H * 0.5, pw = W * 0.56, ph = H * 0.42;
+  rctx.fillStyle = "#2b3439"; rctx.strokeStyle = steel; rctx.lineWidth = 2;
+  roundRect(px, py, pw, ph, 18); rctx.fill(); rctx.stroke();
+  rctx.fillStyle = "#3a464c"; roundRect(px + pw * 0.3, py + ph * 0.55, pw * 0.4, ph * 0.25, 8); rctx.fill();
+  const segLen = [W * 0.15, W * 0.11, W * 0.085];
+  const bases = { 食指:[px + pw * 0.14, py], 中指:[px + pw * 0.38, py], 无名指:[px + pw * 0.62, py], 小指:[px + pw * 0.85, py] };
+  const lens = { 食指:1, 中指:1.1, 无名指:1, 小指:0.8 };
+  for (const n of ["食指","中指","无名指","小指"]) {
+    const curl = r ? r.motors[n] / 1000 : 0;
+    let [x, y] = bases[n];
+    for (let k = 0; k < 3; k++) {
+      // front view: a joint flexing toward the viewer foreshortens the segment
+      const theta = curl * [70, 95, 70][k] * Math.PI / 180;
+      const L = segLen[k] * lens[n] * Math.max(0.12, Math.cos(theta * (k + 1) / 2));
+      const shade = 0.55 + 0.45 * Math.cos(theta);
+      rctx.fillStyle = `rgba(185,196,202,${shade})`;
+      roundRect(x - W * 0.05, y - L, W * 0.1, L, 9); rctx.fill();
+      rctx.fillStyle = "#0e1113"; rctx.beginPath(); rctx.arc(x, y, 3, 0, 7); rctx.fill();
+      y -= L + 2;
+    }
+  }
+  // thumb: rotates across the palm and flexes
+  const tr = r ? r.motors["拇指旋转"] / 1000 : 0.3, tc = r ? r.motors["拇指"] / 1000 : 0;
+  let x = px + 6, y = py + ph * 0.7, a = -Math.PI * (0.62 - 0.32 * tr);
+  for (let k = 0; k < 2; k++) {
+    const L = W * [0.12, 0.09][k] * Math.max(0.25, Math.cos(tc * 1.1));
+    rctx.save(); rctx.translate(x, y); rctx.rotate(a);
+    rctx.fillStyle = `rgba(185,196,202,${0.6 + 0.4 * (1 - tc)})`; roundRect(0, -W * 0.035, L, W * 0.07, 7); rctx.fill();
+    rctx.restore();
+    x += Math.cos(a) * L; y += Math.sin(a) * L; a += tc * 0.9;
+  }
+}
+function roundRect(x, y, w, h, r){ rctx.beginPath(); rctx.roundRect ? rctx.roundRect(x, y, w, h, r) : rctx.rect(x, y, w, h); }
+
+function render(r, Q){
+  for (const [n, d] of Object.entries(motorRows)) {
+    const v = r ? Math.round(r.motors[n]) : 0;
+    d.querySelector("i").style.width = (v / 10) + "%"; d.querySelector(".num").textContent = v;
+  }
+  $("angles").textContent = r ? NAMES.map(n => n + " " + r.angles[n].map(a => a.toFixed(0)).join("/")).join("\n") : "—";
+  if (!Q) { setChk("hand", "bad", "没看到手"); ["size","frame","speed","jitter","conf"].forEach(k => setChk(k, "", "—")); return; }
+  setChk("hand", "ok", "看到了");
+  setChk("size", Q.q.size, Q.q.size === "ok" ? "合适" : "太远");
+  setChk("frame", Q.q.frame, Q.q.frame === "ok" ? "完整" : "出框");
+  setChk("speed", Q.q.speed, Q.speed.toFixed(1) + "/s");
+  setChk("jitter", Q.q.jitter, Q.jitter.toFixed(1) + "mm");
+  setChk("conf", Q.q.conf, Q.score.toFixed(2));
+}
+
+function loop(){
+  if (!running) return;
+  const t = performance.now();
+  if (landmarker && video.readyState >= 2) {
+    const res = landmarker.detectForVideo(video, t);
+    const lm = res.landmarks?.[0], w = res.worldLandmarks?.[0];
+    const score = res.handedness?.[0]?.[0]?.score ?? res.handednesses?.[0]?.[0]?.score ?? 0;
+    drawOverlay(lm);
+    if (lm && w) {
+      const r = retarget(w), Q = quality(lm, w, score, t);
+      drawRobot(r); render(r, Q);
+      last = { lm }; lastT = t;
+      if (rec) rec.frames.push({ t: (t - rec.t0) / 1000, ok: Q.usable, q: Q.q, motors: r.motors, angles: r.angles, lm: w.map(p => [+p.x.toFixed(4), +p.y.toFixed(4), +p.z.toFixed(4)]) });
+    } else {
+      ema = null; last = null; drawRobot(null); render(null, null);
+      if (rec) rec.frames.push({ t: (t - rec.t0) / 1000, ok: false, q: { hand: "bad" } });
+    }
+    if (rec) {
+      const el = (t - rec.t0) / 1000; $("recBadge").textContent = "● REC " + el.toFixed(1) + "s";
+      if (el >= 5) finishRec();
+    }
+  }
+  requestAnimationFrame(loop);
+}
+
+$("recBtn").onclick = () => { rec = { t0: performance.now(), frames: [] }; $("recBadge").classList.add("on"); $("recBtn").disabled = true; $("card").hidden = true; };
+
+let lastCard = null;
+function finishRec(){
+  const F = rec.frames; rec = null; $("recBadge").classList.remove("on"); $("recBtn").disabled = false;
+  const n = F.length, ok = F.filter(f => f.ok).length, frac = n ? ok / n : 0;
+  const issues = {};
+  const NAMES_Q = { hand:"手不在画面", size:"手太远", frame:"手出框", speed:"动太快（会糊）", jitter:"关键点抖动", conf:"识别不确定" };
+  F.forEach(f => Object.entries(f.q || {}).forEach(([k, s]) => { if (s === "bad") issues[k] = (issues[k] || 0) + 1; }));
+  const top = Object.entries(issues).sort((a, b) => b[1] - a[1]).slice(0, 2).map(([k, c]) => `${NAMES_Q[k]} ${(100 * c / n).toFixed(0)}%`);
+  const motorsSeen = F.filter(f => f.motors);
+  const range = NAMES.map(nm => { const v = motorsSeen.map(f => f.motors[nm]); return v.length ? Math.max(...v) - Math.min(...v) : 0; });
+  const covered = range.filter(x => x > 300).length;
+  const cls = frac >= 0.8 ? "ok" : frac >= 0.5 ? "warn" : "bad";
+  $("verdict").className = "verdict " + cls;
+  $("verdict").textContent = cls === "ok" ? "可以入库" : cls === "warn" ? "勉强能用，建议重录" : "不能用";
+  const fps = n / 5;
+  $("kv").innerHTML = "";
+  [["帧数", `${n}（${fps.toFixed(0)} fps）`], ["可用帧", `${(frac * 100).toFixed(0)}%`], ["主要问题", top.length ? top.join("，") : "无"],
+   ["动作覆盖", `${covered}/5 根手指动作幅度够大`], ["输出", "每帧 21 点 3D 坐标 + 6 路电机指令"]]
+    .forEach(([k, v]) => { const a = document.createElement("span"); a.textContent = k; const b = document.createElement("span"); b.textContent = v; $("kv").append(a, b); });
+  drawTraj(F);
+  lastCard = { schema: "hand-capture/0.1", fps, frames: F, usable_fraction: frac, issues, verdict: cls };
+  $("card").hidden = false; $("card").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function drawTraj(F){
+  const c = $("traj"), x = c.getContext("2d"), W = c.width, H = c.height; x.clearRect(0, 0, W, H);
+  x.strokeStyle = "#2a3338"; x.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) { x.beginPath(); x.moveTo(0, H * i / 4); x.lineTo(W, H * i / 4); x.stroke(); }
+  // unusable frames shaded
+  F.forEach(f => { if (!f.ok) { x.fillStyle = "rgba(239,111,94,.18)"; x.fillRect(f.t / 5 * W, 0, W / Math.max(F.length, 1) + 1, H); } });
+  NAMES.forEach((n, i) => {
+    x.strokeStyle = COLORS[i]; x.lineWidth = 2; x.beginPath(); let s = false;
+    F.forEach(f => { if (!f.motors) { s = false; return; } const px = f.t / 5 * W, py = H - f.motors[n] / 1000 * H; s ? x.lineTo(px, py) : x.moveTo(px, py); s = true; });
+    x.stroke();
+  });
+  $("legend").innerHTML = NAMES.map((n, i) => `<span><i style="background:${COLORS[i]}"></i>${n}</span>`).join("") + `<span><i style="background:rgba(239,111,94,.5)"></i>不可用帧</span>`;
+}
+
+$("saveBtn").onclick = () => {
+  if (!lastCard) return;
+  const blob = new Blob([JSON.stringify(lastCard)], { type: "application/json" });
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "hand-capture-" + Date.now() + ".json"; a.click();
+};
+drawRobot(null); render(null, null);
+const imgParam = new URLSearchParams(location.search).get("img");
+if (imgParam) (async () => {
+  await ready;
+  const im = new Image(); im.src = imgParam; await im.decode();
+  await landmarker.setOptions({ runningMode: "IMAGE" });
+  let res;
+  try { res = landmarker.detect(im); } catch (e) { $("badge").textContent = "测试出错：" + e.message; return; }
+  const lm = res.landmarks?.[0], w = res.worldLandmarks?.[0];
+  const score = res.handedness?.[0]?.[0]?.score ?? res.handednesses?.[0]?.[0]?.score ?? 0;
+  $("badge").textContent = "测试图：" + (lm ? "检测到手 " + score.toFixed(2) : "没检测到");
+  if (lm && w) { const r = retarget(w); last = null; ema = null; drawRobot(r); render(r, quality(lm, w, score, 0)); }
+  $("startBox").hidden = true;
+  const v = document.createElement("img"); v.src = imgParam; v.style.cssText = "position:absolute;inset:0;width:100%;height:100%;object-fit:contain"; $("stage").prepend(v);
+})();
+else if (location.search.includes("auto")) startCam().catch(e => { $("badge").textContent = "摄像头打不开：" + e.name; });
+window.__diag = () => ({ badge: $("badge").textContent, hand: $("c_hand").textContent, motors: Object.fromEntries(Object.entries(motorRows).map(([k, d]) => [k, d.querySelector(".num").textContent])) });
+</script>
+</body>
+</html>
