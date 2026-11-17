@@ -28,6 +28,7 @@ video,#overlay{position:absolute;inset:0;width:100%;height:100%;object-fit:cover
 .badge{position:absolute;left:10px;top:10px;font-size:13px;padding:3px 10px;border-radius:999px;background:rgba(0,0,0,.6);border:1px solid var(--line)}
 .rec{position:absolute;right:10px;top:10px;font:600 13px var(--f-mono);color:var(--bad);display:none}
 .rec.on{display:block}
+.warn{position:absolute;left:50%;bottom:12px;transform:translateX(-50%);font-weight:700;font-size:18px;padding:6px 16px;border-radius:999px;background:var(--bad);color:#1a0703;white-space:nowrap}
 .start{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:10px;background:rgba(0,0,0,.55);text-align:center;padding:20px}
 .robot{display:grid;grid-template-columns:1fr 1fr;gap:10px;align-items:stretch}
 .panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:10px}
@@ -62,7 +63,7 @@ button:disabled{opacity:.5}
 <div class="wrap">
   <header>
     <h1>手到灵巧手</h1>
-    <p>手机拍一段手 → 实时变成灵巧手的电机指令 → 当场验收这段数据能不能用</p>
+    <p>第一视角拍手 → 实时重定向成灵巧手电机指令 → 边采边质检，废数据不入库</p>
   </header>
 
   <div class="stage" id="stage">
@@ -70,6 +71,7 @@ button:disabled{opacity:.5}
     <canvas id="overlay"></canvas>
     <div class="badge" id="badge">加载模型…</div>
     <div class="rec" id="recBadge">● REC 0.0s</div>
+    <div class="warn" id="liveWarn" hidden></div>
     <div class="start" id="startBox">
       <div>把手伸到镜头前，五指张开再握拳</div>
       <button class="primary" id="startBtn" type="button" style="flex:none">打开摄像头</button>
@@ -102,6 +104,7 @@ button:disabled{opacity:.5}
     <div class="kv" id="kv"></div>
     <canvas id="traj" width="600" height="220"></canvas>
     <div class="legend" id="legend"></div>
+    <div class="foot" id="costNote">行业参照：第一视角采集约 100 元/小时，众包数据实际可用率普遍不足三成，即每有效小时 330 元以上；真机遥操作 500–1000 元/小时。采集时就实时提醒，能把废数据挡在入库之前。</div>
     <button id="saveBtn" type="button">导出这段数据（JSON）</button>
   </div>
 
@@ -310,6 +313,10 @@ function loop(){
       ema = null; last = null; drawRobot(null); render(null, null);
       if (rec) rec.frames.push({ t: (t - rec.t0) / 1000, ok: false, q: { hand: "bad" } });
     }
+    const lastF = rec && rec.frames[rec.frames.length - 1];
+    const WARN = { hand:"手不在画面里", frame:"手出框了", speed:"慢一点", size:"手再近一点", jitter:"拿稳一点", conf:"换个角度" };
+    const bad = lastF && !lastF.ok ? Object.entries(lastF.q || {}).find(([k, v]) => v === "bad") : null;
+    $("liveWarn").hidden = !bad; if (bad) $("liveWarn").textContent = WARN[bad[0]] || "这一帧不能用";
     if (rec) {
       const el = (t - rec.t0) / 1000; $("recBadge").textContent = "● REC " + el.toFixed(1) + "s";
       if (el >= 5) finishRec();
@@ -322,7 +329,7 @@ $("recBtn").onclick = () => { rec = { t0: performance.now(), frames: [] }; $("re
 
 let lastCard = null;
 function finishRec(){
-  const F = rec.frames; rec = null; $("recBadge").classList.remove("on"); $("recBtn").disabled = false;
+  const F = rec.frames; rec = null; $("recBadge").classList.remove("on"); $("liveWarn").hidden = true; $("recBtn").disabled = false;
   const n = F.length, ok = F.filter(f => f.ok).length, frac = n ? ok / n : 0;
   const issues = {};
   const NAMES_Q = { hand:"手不在画面", size:"手太远", frame:"手出框", speed:"动太快（会糊）", jitter:"关键点抖动", conf:"识别不确定" };
@@ -337,7 +344,8 @@ function finishRec(){
   const fps = n / 5;
   $("kv").innerHTML = "";
   [["帧数", `${n}（${fps.toFixed(0)} fps）`], ["可用帧", `${(frac * 100).toFixed(0)}%`], ["主要问题", top.length ? top.join("，") : "无"],
-   ["动作覆盖", `${covered}/5 根手指动作幅度够大`], ["输出", "每帧 21 点 3D 坐标 + 6 路电机指令"]]
+   ["动作覆盖", `${covered}/5 根手指动作幅度够大`],
+   ["折算成本", frac > 0 ? `每有效小时 ${Math.round(100 / frac)} 元（按第一视角采集 100 元/小时）` : "这段没有有效帧"], ["输出", "每帧 21 点 3D 坐标 + 6 路电机指令"]]
     .forEach(([k, v]) => { const a = document.createElement("span"); a.textContent = k; const b = document.createElement("span"); b.textContent = v; $("kv").append(a, b); });
   drawTraj(F);
   lastCard = { schema: "hand-capture/0.1", fps, frames: F, usable_fraction: frac, issues, verdict: cls };
