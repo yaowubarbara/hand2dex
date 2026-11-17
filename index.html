@@ -63,7 +63,7 @@ button:disabled{opacity:.5}
 <div class="wrap">
   <header>
     <h1>手到灵巧手</h1>
-    <p>第一视角拍手 → 实时重定向成灵巧手电机指令 → 边采边质检，废数据不入库</p>
+    <p>拍手 → 重定向成灵巧手控制值 → 采集现场发现异常，当场提醒补采</p>
   </header>
 
   <div class="stage" id="stage">
@@ -84,7 +84,7 @@ button:disabled{opacity:.5}
       <canvas id="robotCanvas" width="400" height="400"></canvas>
     </div>
     <div class="panel">
-      <div class="label">电机指令 0–1000</div>
+      <div class="label">映射后的控制值 0–1000（未接真机）</div>
       <div class="motors" id="motors"></div>
       <div class="label" style="margin-top:10px">手指弯曲角（°）</div>
       <div class="num" id="angles" style="text-align:left;line-height:1.5;margin-top:4px;white-space:pre-wrap;word-break:break-all">—</div>
@@ -94,22 +94,25 @@ button:disabled{opacity:.5}
   <div class="checks" id="checks"></div>
 
   <div class="row">
-    <button class="primary" id="recBtn" type="button" disabled>录 5 秒并验收</button>
+    <button class="primary" id="recBtn" type="button" disabled>录 5 秒并质检</button>
     <button id="flipBtn" type="button">换镜头</button>
   </div>
 
   <div class="card" id="card" hidden>
-    <div class="label">这段采集的验收卡</div>
+    <div class="label">这段采集的质检卡</div>
     <div class="verdict" id="verdict"></div>
     <div class="kv" id="kv"></div>
     <canvas id="traj" width="600" height="220"></canvas>
     <div class="legend" id="legend"></div>
-    <div class="foot" id="costNote">行业参照：第一视角采集约 100 元/小时，众包数据实际可用率普遍不足三成，即每有效小时 330 元以上；真机遥操作 500–1000 元/小时。采集时就实时提醒，能把废数据挡在入库之前。</div>
+    <video id="replay" playsinline muted controls style="width:100%;border-radius:10px;background:#000"></video>
+    <div class="label">异常时间轴（点红色标记回看那一刻）</div>
+    <canvas id="tl" width="600" height="40" style="width:100%;height:40px;display:block;cursor:pointer"></canvas>
+    <div class="foot" id="tlNote">只做提醒，不删帧。规则是初版：手出框、太远、动太快、关键点抖动、识别置信度低。最终合不合格，要按任务要求验。</div>
     <button id="saveBtn" type="button">导出这段数据（JSON）</button>
   </div>
 
   <div class="foot">
-    全部在手机本地运行，不上传画面。手部 21 个关键点来自 Google MediaPipe Hand Landmarker；重定向和验收规则是自己写的，阈值是初版，会随真实采集再校准。
+    全部在手机本地运行，不上传画面。手部 21 个关键点来自 Google MediaPipe Hand Landmarker；重定向和质检规则是自己写的，阈值是初版、未经真实采集校准，控制值没有接真机验证。
   </div>
 </div>
 
@@ -325,11 +328,37 @@ function loop(){
   requestAnimationFrame(loop);
 }
 
-$("recBtn").onclick = () => { rec = { t0: performance.now(), frames: [] }; $("recBadge").classList.add("on"); $("recBtn").disabled = true; $("card").hidden = true; };
+$("recBtn").onclick = () => { startClip(); rec = { t0: performance.now(), frames: [] }; $("recBadge").classList.add("on"); $("recBtn").disabled = true; $("card").hidden = true; };
 
+let recorder = null, chunks = [];
+function startClip(){
+  chunks = [];
+  try {
+    const mime = ["video/webm;codecs=vp9","video/webm;codecs=vp8","video/webm","video/mp4"].find(m => window.MediaRecorder && MediaRecorder.isTypeSupported(m));
+    if (!stream || !mime) return;
+    recorder = new MediaRecorder(stream, { mimeType: mime });
+    recorder.ondataavailable = e => e.data.size && chunks.push(e.data);
+    recorder.onstop = () => { const v = $("replay"); v.src = URL.createObjectURL(new Blob(chunks, { type: recorder.mimeType })); v.classList.toggle("mirror", facing === "user"); };
+    recorder.start();
+  } catch (e) { recorder = null; }
+}
+function stopClip(){ try { recorder && recorder.state !== "inactive" && recorder.stop(); } catch (e) {} }
+let tlFrames = [];
+function drawTimeline(F){
+  tlFrames = F; const c = $("tl"), x = c.getContext("2d"), W = c.width, H = c.height; x.clearRect(0, 0, W, H);
+  x.fillStyle = "#24302f"; x.fillRect(0, H/2 - 4, W, 8);
+  F.forEach(f => { x.fillStyle = f.ok ? "rgba(95,209,139,.55)" : "#ef6f5e"; x.fillRect(f.t / 5 * W, f.ok ? H/2 - 4 : 4, Math.max(2, W / Math.max(F.length, 1)), f.ok ? 8 : H - 8); });
+}
+$("tl").onclick = e => {
+  const r = e.currentTarget.getBoundingClientRect(), t = (e.clientX - r.left) / r.width * 5;
+  const bad = tlFrames.filter(f => !f.ok).sort((a, b) => Math.abs(a.t - t) - Math.abs(b.t - t))[0];
+  const near = bad && Math.abs(bad.t - t) < 0.6, target = near ? bad.t : t;
+  const v = $("replay"); try { v.currentTime = Math.max(0, target - 0.3); v.play(); } catch (_) {}
+  if (near) { const k = Object.entries(bad.q || {}).find(([, s]) => s === "bad"); $("tlNote").textContent = bad.t.toFixed(1) + " 秒：" + ({hand:"手不在画面",size:"手太远",frame:"手出框",speed:"动太快",jitter:"关键点抖动",conf:"识别不确定"}[k ? k[0] : ""] || "规则未通过"); }
+};
 let lastCard = null;
 function finishRec(){
-  const F = rec.frames; rec = null; $("recBadge").classList.remove("on"); $("liveWarn").hidden = true; $("recBtn").disabled = false;
+  stopClip(); const F = rec.frames; rec = null; $("recBadge").classList.remove("on"); $("liveWarn").hidden = true; $("recBtn").disabled = false;
   const n = F.length, ok = F.filter(f => f.ok).length, frac = n ? ok / n : 0;
   const issues = {};
   const NAMES_Q = { hand:"手不在画面", size:"手太远", frame:"手出框", speed:"动太快（会糊）", jitter:"关键点抖动", conf:"识别不确定" };
@@ -340,14 +369,14 @@ function finishRec(){
   const covered = range.filter(x => x > 300).length;
   const cls = frac >= 0.8 ? "ok" : frac >= 0.5 ? "warn" : "bad";
   $("verdict").className = "verdict " + cls;
-  $("verdict").textContent = cls === "ok" ? "可以入库" : cls === "warn" ? "勉强能用，建议重录" : "不能用";
+  $("verdict").textContent = cls === "ok" ? "没发现明显异常" : cls === "warn" ? "有异常，建议补采" : "异常较多，建议重录";
   const fps = n / 5;
   $("kv").innerHTML = "";
-  [["帧数", `${n}（${fps.toFixed(0)} fps）`], ["可用帧", `${(frac * 100).toFixed(0)}%`], ["主要问题", top.length ? top.join("，") : "无"],
+  [["帧数", `${n}（${fps.toFixed(0)} fps）`], ["规则通过帧", `${(frac * 100).toFixed(0)}%`], ["主要问题", top.length ? top.join("，") : "无"],
    ["动作覆盖", `${covered}/5 根手指动作幅度够大`],
-   ["折算成本", frac > 0 ? `每有效小时 ${Math.round(100 / frac)} 元（按第一视角采集 100 元/小时）` : "这段没有有效帧"], ["输出", "每帧 21 点 3D 坐标 + 6 路电机指令"]]
+   ["输出", "每帧 21 点 3D 坐标 + 6 路映射控制值"]]
     .forEach(([k, v]) => { const a = document.createElement("span"); a.textContent = k; const b = document.createElement("span"); b.textContent = v; $("kv").append(a, b); });
-  drawTraj(F);
+  drawTraj(F); drawTimeline(F);
   lastCard = { schema: "hand-capture/0.1", fps, frames: F, usable_fraction: frac, issues, verdict: cls };
   $("card").hidden = false; $("card").scrollIntoView({ behavior: "smooth", block: "start" });
 }
